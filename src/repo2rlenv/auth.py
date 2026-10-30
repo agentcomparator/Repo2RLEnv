@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from repo2rlenv.spec.input import AuthSpec, RepoSpec
+from repo2rlenv.spec.input import OPENAI_COMPAT_API_TOKEN_ENV, AuthSpec, RepoSpec
 
 
 class AuthError(RuntimeError):
@@ -64,12 +64,17 @@ def resolve_hf_token(auth: AuthSpec) -> str | None:
 # Provider → env var for the hosted providers we resolve ourselves, so a missing
 # key fails fast with the var named. Everything else (Bedrock, Vertex, self-hosted
 # vLLM / Ollama, …) resolves inside LiteLLM — and the self-hosted ones need none.
+# `openai_compat` is our own alias for an OpenAI-compatible gateway: it speaks the
+# OpenAI wire contract to $OPENAI_COMPAT_BASE_URL with $OPENAI_COMPAT_API_TOKEN
+# (see `llm.wire_model_name` / `llm.openai_compat_api_base`), so its token is
+# resolved here, never by LiteLLM.
 LLM_KEY_ENV_DEFAULTS: dict[str, str] = {
     "anthropic": "ANTHROPIC_API_KEY",
     "openai": "OPENAI_API_KEY",
     "huggingface": "HF_TOKEN",
     "together": "TOGETHER_API_KEY",
     "groq": "GROQ_API_KEY",
+    "openai_compat": OPENAI_COMPAT_API_TOKEN_ENV,
 }
 
 

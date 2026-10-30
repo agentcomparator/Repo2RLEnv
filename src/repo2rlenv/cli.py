@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any
 
 from repo2rlenv import __version__
+from repo2rlenv.spec.input import OPENAI_COMPAT_PROVIDER
 from repo2rlenv.ui import console, ensure_utf8_output, install_logging
 
 logger = logging.getLogger("repo2rlenv")
@@ -70,6 +71,10 @@ def _parse_pipeline_opts(items: list[str] | None) -> dict[str, Any]:
 
 def _split_provider_model(value: str, flag: str) -> tuple[str, str]:
     if "/" not in value:
+        # The OpenAI-compatible alias may name only the provider: the model comes
+        # from $OPENAI_COMPAT_MODEL and is filled in by LLMSpec.
+        if value == OPENAI_COMPAT_PROVIDER:
+            return value, ""
         raise SystemExit(f"{flag} expects provider/model, got {value!r}")
     provider, model = value.split("/", 1)
     return provider, model
@@ -129,7 +134,12 @@ def _add_llm_args(parser: argparse.ArgumentParser, *, required: bool, fallback: 
     parser.add_argument(
         "--llm",
         required=required,
-        help="LLM as provider/model (e.g. anthropic/claude-sonnet-4-6)",
+        help=(
+            "LLM as provider/model (e.g. anthropic/claude-sonnet-4-6). "
+            f"`{OPENAI_COMPAT_PROVIDER}` may stand alone — it reads the gateway triad "
+            "$OPENAI_COMPAT_BASE_URL / $OPENAI_COMPAT_API_TOKEN / $OPENAI_COMPAT_MODEL, "
+            f"so `--llm {OPENAI_COMPAT_PROVIDER}` needs no /model"
+        ),
     )
     if fallback:
         parser.add_argument(
@@ -145,7 +155,8 @@ def _add_llm_args(parser: argparse.ArgumentParser, *, required: bool, fallback: 
         help=(
             "base URL of a self-hosted OpenAI-compatible server for the primary --llm "
             "(vLLM, Ollama, …), e.g. http://localhost:8000/v1. No API key needed; the "
-            "provider-default key is never sent there — use --llm-key-env to send one"
+            "provider-default key is never sent there — use --llm-key-env to send one. "
+            f"Overrides $OPENAI_COMPAT_BASE_URL for --llm {OPENAI_COMPAT_PROVIDER}"
         ),
     )
     parser.add_argument(

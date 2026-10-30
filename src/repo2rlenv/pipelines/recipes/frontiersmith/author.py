@@ -8,6 +8,7 @@ from pathlib import Path
 
 from repo2rlenv.auth import resolve_llm_api_key
 from repo2rlenv.execution.lifecycle import save_record
+from repo2rlenv.llm import is_openai_compat, openai_compat_api_base, wire_model_name
 from repo2rlenv.tasksmith.author.openai_agent import PRICES, model_name, usage_cost
 
 
@@ -16,9 +17,18 @@ class InvalidArtifact(ValueError):
 
 
 def author(spec, schema, *, prompt, payload, path: Path, ledger, operation, max_tokens, resume):
-    name = model_name(spec.qualified_name)
-    if spec.provider != "openai" or spec.endpoint or spec.fallback:
-        raise ValueError("FrontierSmith requires direct OpenAI without implicit fallbacks")
+    compat = is_openai_compat(spec)
+    if spec.provider != "openai" and not compat:
+        raise ValueError(
+            "FrontierSmith requires OpenAI (or openai_compat) without implicit fallbacks"
+        )
+    if spec.fallback or (spec.endpoint and not compat):
+        raise ValueError(
+            "FrontierSmith requires OpenAI (or openai_compat) without implicit fallbacks"
+        )
+    # The pricing contract keys on real OpenAI models, so the budget below stays
+    # honest whichever route fronts them.
+    name = model_name(wire_model_name(spec))
     request = {
         "model": name,
         "instructions": prompt,
@@ -66,7 +76,12 @@ def author(spec, schema, *, prompt, payload, path: Path, ledger, operation, max_
     )
     save_record(path, record)
     try:
-        with OpenAI(api_key=key, max_retries=0, timeout=spec.timeout_sec) as client:
+        with OpenAI(
+            **({"base_url": openai_compat_api_base(spec)} if compat else {}),
+            api_key=key,
+            max_retries=0,
+            timeout=spec.timeout_sec,
+        ) as client:
             response = client.responses.create(
                 **request,
                 text={

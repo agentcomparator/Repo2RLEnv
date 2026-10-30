@@ -11,7 +11,13 @@ from pathlib import Path
 from repo2rlenv.auth import resolve_llm_api_key
 from repo2rlenv.execution.harbor import read_trial
 from repo2rlenv.execution.lifecycle import now, save_record
-from repo2rlenv.llm import completion_token_limit
+from repo2rlenv.llm import (
+    DIRECT_PROVIDERS,
+    completion_token_limit,
+    is_openai_compat,
+    openai_compat_api_base,
+    wire_model_name,
+)
 from repo2rlenv.quality.loop.artifacts import parse_task, task_identity
 from repo2rlenv.quality.loop.remote import RemoteTrials
 
@@ -163,8 +169,13 @@ class NativeModalTrials:
             role
         ]
         if model is not None:
-            if model.endpoint or model.fallback or model.provider not in {"anthropic", "openai"}:
+            if model.provider.lower() not in DIRECT_PROVIDERS or model.fallback:
                 raise ValueError("Native blind trials require a direct model provider")
+            if model.endpoint and not is_openai_compat(model):
+                raise ValueError(
+                    "Native blind trials do not forward --llm-endpoint; openai_compat reads "
+                    "its gateway URL from $OPENAI_COMPAT_BASE_URL"
+                )
             if not resolve_llm_api_key(model.provider, model.api_key_env):
                 raise ValueError("Solver credentials are missing; no native dispatch")
             if model.api_key_env is not None:
@@ -198,6 +209,14 @@ class NativeModalTrials:
             if model
             else {}
         )
+        if model is not None and is_openai_compat(model):
+            # Terminus routes `openai/<model>` (wire_model_name below) and resolves
+            # OpenAI names itself: hand it the gateway URL and token explicitly
+            # instead of expecting our env names in this process.
+            kwargs["api_base"] = openai_compat_api_base(model)
+            kwargs["llm_kwargs"] = {
+                "api_key": resolve_llm_api_key(model.provider, model.api_key_env)
+            }
         configuration = TrialConfig.model_validate(
             {
                 "task": {"path": str(task.resolve())},
@@ -205,7 +224,7 @@ class NativeModalTrials:
                 "trials_dir": str(output / trial_id),
                 "agent": {
                     "name": agent,
-                    "model_name": model.qualified_name if model else None,
+                    "model_name": wire_model_name(model) if model else None,
                     "kwargs": kwargs,
                 },
                 "environment": {

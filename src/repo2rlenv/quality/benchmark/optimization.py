@@ -33,6 +33,8 @@ class OptimizationOptions(Record):
     @model_validator(mode="after")
     def balanced_routes(self):
         if {model.provider for model in self.models} != {"openai", "anthropic"}:
+            # Deliberately exactly one of each: the study compares two vendors, so a
+            # second OpenAI-wire route (openai_compat) would not be a distinct arm.
             raise ValueError("Optimization requires one OpenAI and one Anthropic route")
         if any(model.fallback for model in self.models):
             raise ValueError("Optimization routes must not use silent fallbacks")

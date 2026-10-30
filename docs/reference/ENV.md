@@ -48,13 +48,30 @@ LiteLLM-resolved; per-provider defaults. Override with `--llm-key-env VAR` (or `
 | `HF_TOKEN` | Hugging Face Router |
 | `TOGETHER_API_KEY` | Together |
 | `GROQ_API_KEY` | Groq |
+| `OPENAI_COMPAT_API_TOKEN` | `openai_compat/...` (our alias for an OpenAI-compatible gateway) |
 
-Those five are resolved by `repo2rlenv` itself, so a missing key fails fast with the variable named. Every other LiteLLM provider resolves its own credentials inside LiteLLM (e.g. `OPENROUTER_API_KEY`, AWS credentials for Bedrock). Self-hosted servers need none:
+Those six are resolved by `repo2rlenv` itself, so a missing key fails fast with the variable named. Every other LiteLLM provider resolves its own credentials inside LiteLLM (e.g. `OPENROUTER_API_KEY`, AWS credentials for Bedrock). Self-hosted servers need none:
 
 | Variable | Provider |
 |---|---|
 | `HOSTED_VLLM_API_KEY` *(optional)* | `hosted_vllm/…`. Only needed if your vLLM was started with `--api-key`; honoured with or without `--llm-endpoint`. `HOSTED_VLLM_API_BASE` is the alternative to `--llm-endpoint`. |
 | `OLLAMA_API_KEY` *(optional)* | `ollama/…`. `OLLAMA_API_BASE` defaults to `http://localhost:11434`. |
+
+### `openai_compat` — an OpenAI-compatible gateway from three variables
+
+`--llm openai_compat` (or `llm: {provider: openai_compat}`) speaks the OpenAI wire contract to a gateway you name through env vars alone:
+
+| Variable | Role |
+|---|---|
+| `OPENAI_COMPAT_BASE_URL` | Gateway root, e.g. `https://gateway.internal/v1`. `--llm-endpoint URL` / `llm.endpoint` override it. |
+| `OPENAI_COMPAT_API_TOKEN` | Bearer token. Always sent to the gateway, never a placeholder; `--llm-key-env VAR` / `llm.api_key_env` read a different variable instead. |
+| `OPENAI_COMPAT_MODEL` | Model id, used when `model` is left empty — that is what allows `--llm openai_compat` with no `/MODEL`. |
+
+The alias validates and dispatches as `openai/<model>` (LiteLLM has no `openai_compat` prefix), while receipts and job records keep reading `openai_compat/<model>`. Missing base URL, token or model each fail before any request, naming the variable. Model ids matching the OpenAI reasoning families inherit OpenAI's parameter names (`max_completion_tokens`, no `temperature`), like `openai/` does.
+
+Outside plain `generate`/`bootstrap` the alias rides every direct-dispatch route, declared once in `llm.DIRECT_PROVIDERS`: blind Harbor trials (`harbor run_trial`) and native quality rollouts hand the harness `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` (Terminus also gets `--ak api_base=` or `api_base` in its kwargs), `quality run --review-model/--solver-model` accepts `openai_compat[/MODEL]`, and FrontierSmith accepts it when the model is one of its priced OpenAI ids — that pricing contract (`gpt-6-sol`/`gpt-6-luna`) keeps the ledger exact through the gateway. Pi/OpenCode author stages and the reviewer-optimization benchmark stay Anthropic/OpenAI-only by design.
+
+Cost is still `litellm.completion_cost()`: a model LiteLLM cannot price reports `$0.00`, so cost-based caps (e.g. `max_llm_spend_usd`) never trip for an unpriced model. Prefer a priced model, or bound the run by height (`--max-iterations`, campaign reservations).
 
 With `--llm-endpoint` (or `llm.endpoint` in config), the provider-default key (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, …) is never forwarded to the custom server. `openai/<model>` gets a placeholder, and `hosted_vllm/` and `ollama/` use LiteLLM's own lookup above. Pass `--llm-key-env VAR` to send a specific key.
 

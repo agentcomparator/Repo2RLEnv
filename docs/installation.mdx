@@ -79,7 +79,7 @@ Set only what your route needs. Repo2RLEnv reads secrets from the environment an
 | Service | How to authenticate | Used by |
 |---|---|---|
 | GitHub | `gh auth login`, or `GITHUB_TOKEN`. For per-repository tokens, name the variable in `repo.auth_token_env` in a config file. GitLab uses `GITLAB_TOKEN`. | `generate` (cloning, PR and commit mining), Tasksmith intake |
-| LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN`, `TOGETHER_API_KEY`, `GROQ_API_KEY` (resolved through LiteLLM). `--llm-key-env VAR` picks a different variable; `--llm-endpoint URL` targets a self-hosted OpenAI-compatible server. | `generate --llm` for the runtime pipelines, `bootstrap`, research recipes with model stages, Tasksmith, `quality run` |
+| LLM providers | `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `HF_TOKEN`, `TOGETHER_API_KEY`, `GROQ_API_KEY` (resolved through LiteLLM). `--llm-key-env VAR` picks a different variable; `--llm-endpoint URL` targets a self-hosted OpenAI-compatible server. An OpenAI-compatible gateway can be one provider of its own: `--llm openai_compat` + `$OPENAI_COMPAT_BASE_URL` / `$OPENAI_COMPAT_API_TOKEN` / `$OPENAI_COMPAT_MODEL`. | `generate --llm` for the runtime pipelines, `bootstrap`, research recipes with model stages, Tasksmith, `quality run` |
 | Hugging Face Hub | `hf auth login`, or `HF_TOKEN` with write access to push | `push`, `pull` of private datasets, `release publish` |
 | Modal | `modal setup`, or `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET` | `workers start --provider modal`, `quality run` (Modal is its default provider), `tasksmith run --provider modal` |
 | Daytona | `DAYTONA_API_KEY` | `workers start --provider daytona`, `quality run --provider daytona`, `tasksmith run --provider daytona` |

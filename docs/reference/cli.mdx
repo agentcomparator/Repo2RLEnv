@@ -50,7 +50,7 @@ repo2rlenv generate [--config FILE] [--repo REPO] [--pipeline NAME] [--recipe NA
 | `--pipeline NAME` | none | Pipeline name, such as `pr_diff`. `repo2rlenv pipelines list` shows them all. |
 | `--recipe NAME` | `native` | Research recipe to run for the pipeline, such as `swe_smith`. |
 | `--pipeline-opt KEY=VALUE` | none | Pipeline option. Repeatable. `true`/`false` become booleans, JSON values (numbers, lists) are parsed, and anything else stays a string. Overrides options from `--config`. |
-| `--llm PROVIDER/MODEL` | none | Model for synthesis and bootstrap, such as `anthropic/claude-sonnet-4-6`. |
+| `--llm PROVIDER/MODEL` | none | Model for synthesis and bootstrap, such as `anthropic/claude-sonnet-4-6`. `openai_compat` may stand alone: `--llm openai_compat` reads `$OPENAI_COMPAT_BASE_URL` / `$OPENAI_COMPAT_API_TOKEN` / `$OPENAI_COMPAT_MODEL`. |
 | `--llm-fallback PROVIDER/MODEL` | none | Model to switch to when the primary returns 5xx, rate-limit or network errors. |
 | `--llm-endpoint URL` | none | Base URL of a self-hosted OpenAI-compatible server for the primary model, such as `http://localhost:8000/v1`. The provider's default key is never sent there. |
 | `--llm-key-env VAR` | provider default | Environment variable that holds the primary model's API key. |
@@ -175,7 +175,7 @@ repo2rlenv bootstrap --repo REPO --llm PROVIDER/MODEL [--ref REF] [--max-spend-u
 | `--repo REPO` | required | GitHub `owner/name` or URL. |
 | `--ref REF` | `HEAD` | Branch, tag or commit. |
 | `--access` | `auto` | `public`, `private` or `auto`. |
-| `--llm PROVIDER/MODEL` | required | Model that drives the build agent. |
+| `--llm PROVIDER/MODEL` | required | Model that drives the build agent. `openai_compat` needs no `/MODEL` when `$OPENAI_COMPAT_MODEL` is set. |
 | `--llm-endpoint URL` | none | Self-hosted OpenAI-compatible server for `--llm`. |
 | `--llm-key-env VAR` | provider default | Environment variable that holds the API key. |
 | `--max-iterations N` | `25` | Maximum agent turns. |

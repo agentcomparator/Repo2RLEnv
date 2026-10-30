@@ -8,11 +8,12 @@ LiteLLM's `completion_cost()` to attach a USD estimate.
 from __future__ import annotations
 
 import logging
+import os
 import re
 from dataclasses import dataclass
 
 from repo2rlenv.auth import LLM_KEY_ENV_DEFAULTS, resolve_llm_api_key
-from repo2rlenv.spec.input import LLMSpec
+from repo2rlenv.spec.input import OPENAI_COMPAT_BASE_URL_ENV, OPENAI_COMPAT_PROVIDER, LLMSpec
 
 logger = logging.getLogger(__name__)
 
@@ -35,11 +36,75 @@ def _supports_temperature(model: str) -> bool:
     return _NO_TEMPERATURE_RE.search(model) is None
 
 
+# Providers the direct-dispatch gates accept: credentials we resolve ourselves
+# and a model string a Harbor harness can route (provider prefix + env/api_base).
+# One declaration for `harbor.run_trial`, `quality.loop` validators/CLI and the
+# FrontierSmith author — add a route here only if all of them can drive it.
+DIRECT_PROVIDERS: frozenset[str] = frozenset({"openai", "anthropic", OPENAI_COMPAT_PROVIDER})
+
+
+def agent_credential_env(spec: LLMSpec, key: str) -> dict[str, str]:
+    """Credential env for a sandboxed harness.
+
+    `openai_compat` is injected under OpenAI's names (`OPENAI_API_KEY` +
+    `OPENAI_BASE_URL`) because Harbor's model connection, LiteLLM's `openai/`
+    route and the OpenAI SDK all resolve those two; every other provider keeps
+    the historical `<PROVIDER>_API_KEY` shape.
+    """
+    if is_openai_compat(spec):
+        return {"OPENAI_API_KEY": key, "OPENAI_BASE_URL": openai_compat_api_base(spec)}
+    return {spec.provider.upper() + "_API_KEY": key}
+
+
+def is_openai_compat(spec: LLMSpec) -> bool:
+    """Whether this spec is our alias for an OpenAI-compatible gateway."""
+    return spec.provider.lower() == OPENAI_COMPAT_PROVIDER
+
+
+def wire_model(name: str) -> str:
+    """`wire_model_name` for a rendered `qualified_name` string.
+
+    Receipts and trial records store the alias (`openai_compat/<model>`); recovery
+    paths that rebuild a Harness config from a stored record use this.
+    """
+    if name.lower().startswith(f"{OPENAI_COMPAT_PROVIDER}/"):
+        return "openai/" + name.split("/", 1)[1]
+    return name
+
+
+def wire_model_name(spec: LLMSpec) -> str:
+    """The `provider/model` string to hand LiteLLM / a Harbor harness.
+
+    `openai_compat/<model>` has no LiteLLM provider prefix, so it goes out as the
+    OpenAI wire contract (`openai/<model>`); LiteLLM's route fires against the
+    base URL we set from `$OPENAI_COMPAT_BASE_URL`. Everything else passes through
+    as `qualified_name` — receipt identity still records the alias.
+    """
+    return wire_model(spec.qualified_name)
+
+
+def openai_compat_api_base(spec: LLMSpec) -> str:
+    """Base URL for `openai_compat`; `--llm-endpoint` beats `$OPENAI_COMPAT_BASE_URL`."""
+    if spec.endpoint:
+        return spec.endpoint
+    url = os.environ.get(OPENAI_COMPAT_BASE_URL_ENV, "").strip()
+    if not url:
+        raise RuntimeError(
+            f"no base URL for provider {spec.provider!r}: ${OPENAI_COMPAT_BASE_URL_ENV} is unset. "
+            "Set it to the gateway root (e.g. https://host/v1), or pass "
+            "--llm-endpoint URL (or llm.endpoint in config)."
+        )
+    return url
+
+
 def completion_token_limit(spec: LLMSpec, max_tokens: int) -> dict[str, int]:
     """Provider wire parameters shared with externally orchestrated Harbor calls."""
+    # `openai_compat` sends the OpenAI contract, so its model ids inherit
+    # OpenAI's parameter names whatever the gateway fronts.
     name = (
         "max_completion_tokens"
-        if spec.provider == "openai" and _OPENAI_COMPLETION_LIMIT_RE.match(spec.model)
+        if spec.provider in ("openai", OPENAI_COMPAT_PROVIDER)
+        and _OPENAI_COMPLETION_LIMIT_RE.match(spec.model)
         else "max_tokens"
     )
     return {name: max_tokens}
@@ -86,6 +151,17 @@ def _resolve_api_key(spec: LLMSpec) -> str | None:
       `LLM_KEY_ENV_DEFAULTS` providers, None (LiteLLM's call) for the rest
     """
     provider = spec.provider.lower()
+    if provider == OPENAI_COMPAT_PROVIDER:
+        # Our alias owns the credential: `$OPENAI_COMPAT_API_TOKEN` (or an explicit
+        # `api_key_env`) is always sent to the gateway — never a placeholder, and
+        # the `endpoint` branch below must not warn and strip it.
+        key = resolve_llm_api_key(provider, spec.api_key_env)
+        if key is None:
+            raise RuntimeError(
+                f"no API key for provider {spec.provider!r}: "
+                f"${spec.api_key_env or LLM_KEY_ENV_DEFAULTS[provider]} is unset."
+            )
+        return key
     if spec.api_key_env:
         key = resolve_llm_api_key(provider, spec.api_key_env)
         if key is None:
@@ -123,13 +199,14 @@ def check_provider(spec: LLMSpec) -> None:
 
     cur: LLMSpec | None = spec
     while cur is not None:
+        # Validates the wire name, not the alias: `openai_compat/...` is routed as
+        # `openai/...` at call time, so preflight must ask about that prefix too.
+        wire = wire_model_name(cur)
         try:
-            litellm.get_llm_provider(cur.qualified_name)
+            litellm.get_llm_provider(wire)
         except Exception as exc:
             first_line = str(exc).splitlines()[0] if str(exc) else type(exc).__name__
-            raise RuntimeError(
-                f"unknown LLM provider in {cur.qualified_name!r}: {first_line}"
-            ) from exc
+            raise RuntimeError(f"unknown LLM provider in {wire!r}: {first_line}") from exc
         cur = cur.fallback
 
 
@@ -153,7 +230,7 @@ def _do_complete(
     messages.append({"role": "user", "content": user})
 
     kwargs: dict = {
-        "model": spec.qualified_name,
+        "model": wire_model_name(spec),
         "messages": messages,
         "num_retries": 0,
         "timeout": spec.timeout_sec,
@@ -168,6 +245,8 @@ def _do_complete(
         kwargs["temperature"] = temperature
     if spec.endpoint:
         kwargs["api_base"] = spec.endpoint
+    elif is_openai_compat(spec):
+        kwargs["api_base"] = openai_compat_api_base(spec)
     if response_schema is not None:
         kwargs["response_format"] = {
             "type": "json_schema",

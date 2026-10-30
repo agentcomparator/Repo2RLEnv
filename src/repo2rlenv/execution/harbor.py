@@ -20,7 +20,14 @@ from repo2rlenv.execution.base import RemoteWorker
 from repo2rlenv.execution.jobs import launch_job, observe_job
 from repo2rlenv.execution.lifecycle import now, save_record
 from repo2rlenv.execution.read_retry import retry_read
-from repo2rlenv.llm import completion_token_limit
+from repo2rlenv.llm import (
+    DIRECT_PROVIDERS,
+    agent_credential_env,
+    completion_token_limit,
+    is_openai_compat,
+    openai_compat_api_base,
+    wire_model_name,
+)
 from repo2rlenv.spec.input import LLMSpec
 
 
@@ -231,7 +238,7 @@ def run_trial(
     if agent == "responses":
         from repo2rlenv.tasksmith.author.openai_agent import model_name
 
-        model_name(model.qualified_name)
+        model_name(wire_model_name(model))  # the pricing contract sees the wire name
     if not (1 <= max_turns <= 100 and 256 <= max_tokens <= 8192 and 30 <= timeout_sec <= 3600):
         raise ValueError("Trial limits are outside the supported bounded range")
     if type(reservation_wait_sec) is not int or not 0 <= reservation_wait_sec <= 300:
@@ -244,12 +251,19 @@ def run_trial(
     Task(task)  # Parse the exact pinned Harbor contract before dispatch.
     env = {"REPO2RLENV_REMOTE_WORKER": "1"}
     if model is not None:
-        if model.provider not in {"openai", "anthropic"} or model.endpoint or model.fallback:
-            raise ValueError("Blind trials currently support direct OpenAI/Anthropic routes")
+        if model.provider.lower() not in DIRECT_PROVIDERS or model.fallback:
+            raise ValueError(
+                "Blind trials support direct OpenAI/Anthropic routes and openai_compat"
+            )
+        if model.endpoint and not is_openai_compat(model):
+            raise ValueError(
+                "Blind trials do not forward --llm-endpoint to a harness; openai_compat "
+                "reads its gateway URL from $OPENAI_COMPAT_BASE_URL instead"
+            )
         key = resolve_llm_api_key(model.provider, model.api_key_env)
         if not key or ledger is None:
             raise ValueError("A blind trial requires credentials and a campaign ledger")
-        env[model.provider.upper() + "_API_KEY"] = key
+        env.update(agent_credential_env(model, key))
     receipt = output / "trial.json"
     operation_id = "trial:" + trial_id
     record = {
@@ -376,7 +390,7 @@ def run_trial(
             command.extend(
                 [
                     "--model",
-                    model.qualified_name,
+                    wire_model_name(model),
                     "--ak",
                     f"max_turns={max_turns}",
                     "--ak",
@@ -391,7 +405,7 @@ def run_trial(
             command.extend(
                 [
                     "--model",
-                    model.qualified_name,
+                    wire_model_name(model),
                     "--ak",
                     f"max_turns={max_turns}",
                     "--ak",
@@ -400,6 +414,8 @@ def run_trial(
                     "llm_call_kwargs=" + json.dumps(completion_token_limit(model, max_tokens)),
                 ]
             )
+            if is_openai_compat(model):
+                command.extend(["--ak", "api_base=" + openai_compat_api_base(model)])
         record.update(state="dispatched", trial_dispatched=True, command=command)
         save_record(receipt, record)
         launch_job(worker, remote_dir, command, timeout_sec=timeout_sec, env=env, python=python)

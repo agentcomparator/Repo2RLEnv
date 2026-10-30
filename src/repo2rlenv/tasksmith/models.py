@@ -168,7 +168,8 @@ class Options(Record):
             raise ValueError("Worker snapshots currently require Modal")
         if not self.author_model.startswith("anthropic/"):
             raise ValueError(
-                "Pi/OpenCode author bridge currently supports Anthropic; quality models may use OpenAI or Anthropic"
+                "Pi/OpenCode author bridge currently supports Anthropic; quality models may "
+                "use OpenAI, Anthropic or openai_compat"
             )
         for value in (self.author_stage_usd, self.max_spend_usd, self.worker_reservation_usd):
             if not Decimal(value).is_finite() or Decimal(value) <= 0:

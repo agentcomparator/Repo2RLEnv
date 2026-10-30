@@ -109,6 +109,7 @@ LiteLLM resolves provider keys from provider-default env vars:
 | Hugging Face Router | `HF_TOKEN` |
 | Together | `TOGETHER_API_KEY` |
 | Groq | `GROQ_API_KEY` |
+| OpenAI-compatible gateway (`openai_compat/...`) | `OPENAI_COMPAT_API_TOKEN` (base URL: `$OPENAI_COMPAT_BASE_URL`, model: `$OPENAI_COMPAT_MODEL`) |
 
 Override with `--llm-key-env VAR` (or `llm.api_key_env` in config) if you have non-default names. Providers not in the table are resolved by LiteLLM's own per-provider lookup.
 

@@ -29,7 +29,8 @@ def probe_program(name: str, submitted_path: str | None = None) -> str:
     'no_docker_socket': not pathlib.Path('/var/run/docker.sock').exists(),
     'no_git_history': not any(pathlib.Path('/workspace').rglob('.git')),
     'no_model_credentials': not any(os.environ.get(k) for k in
-        ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'HF_TOKEN', 'DAYTONA_API_KEY')),
+        ('OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'HF_TOKEN', 'DAYTONA_API_KEY',
+         'OPENAI_COMPAT_API_TOKEN')),
 }
 try:
     socket.create_connection(('1.1.1.1', 443), timeout=2).close()

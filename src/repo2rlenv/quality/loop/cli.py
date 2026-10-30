@@ -9,16 +9,26 @@ from rich.table import Table
 from rich.text import Text
 
 from repo2rlenv.campaigns.budget import BudgetLedger
+from repo2rlenv.llm import DIRECT_PROVIDERS
 from repo2rlenv.quality.loop.models import LoopOptions, LoopResult
-from repo2rlenv.spec.input import LLMSpec
+from repo2rlenv.spec.input import OPENAI_COMPAT_PROVIDER, LLMSpec
 from repo2rlenv.ui import console
 from repo2rlenv.ui.errors import report_error
 
 
 def model_spec(value: str) -> LLMSpec:
     provider, separator, model = value.partition("/")
-    if not separator or not model or provider not in {"openai", "anthropic"}:
-        raise argparse.ArgumentTypeError("Use openai/MODEL or anthropic/MODEL")
+    if provider == OPENAI_COMPAT_PROVIDER and not (separator and model):
+        # `--model openai_compat` alone; LLMSpec fills $OPENAI_COMPAT_MODEL or
+        # raises naming it — surface that as a flag error, not a traceback.
+        try:
+            return LLMSpec(provider=provider, model="", timeout_sec=180)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    if not separator or not model or provider not in DIRECT_PROVIDERS:
+        raise argparse.ArgumentTypeError(
+            "Use openai/MODEL, anthropic/MODEL or openai_compat[/MODEL]"
+        )
     return LLMSpec(provider=provider, model=model, timeout_sec=180)
 
 

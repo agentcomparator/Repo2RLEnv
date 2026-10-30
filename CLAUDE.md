@@ -265,7 +265,10 @@ HF Hub auth uses `huggingface_hub`'s own resolution
 env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, …) via `auth.resolve_llm_api_key()` —
 only for the providers in `auth.LLM_KEY_ENV_DEFAULTS`. Anything else is left to LiteLLM's
 own lookup, and a self-hosted `LLMSpec.endpoint` (`--llm-endpoint`) needs no key at all
-(`llm._resolve_api_key`).
+(`llm._resolve_api_key`). The `openai_compat` alias is the exception that owns all three
+gateway variables: it sends `openai/<model>` to `$OPENAI_COMPAT_BASE_URL` with
+`$OPENAI_COMPAT_API_TOKEN`, defaults `model` from `$OPENAI_COMPAT_MODEL` (`spec/input.py`),
+and rejects a missing name of the three before any request. Routes allowed by every direct dispatch gate (blind trials, quality-loop models, FrontierSmith) are declared once in `llm.DIRECT_PROVIDERS`; a harness gets `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` via `llm.agent_credential_env`, though the Pi/OpenCode author bridge and the reviewer-optimization benchmark stay Anthropic/OpenAI-only.
 
 Registry push credentials resolve from explicit env vars first: GHCR reads
 `GHCR_TOKEN` / `GITHUB_TOKEN` (needs a one-time

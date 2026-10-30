@@ -32,7 +32,7 @@ from repo2rlenv.pipelines.recipes.frontiersmith.models import (
     Seed,
 )
 from repo2rlenv.pipelines.recipes.frontiersmith.retention import retain
-from repo2rlenv.spec.input import PipelineName, SeedSource
+from repo2rlenv.spec.input import OPENAI_COMPAT_PROVIDER, PipelineName, SeedSource
 
 
 def score_report(trial):
@@ -68,8 +68,8 @@ class FrontierSmithPipeline:
     def __init__(self, input, options, bootstrap=None):
         if not isinstance(input.source, SeedSource) or input.execution is None:
             raise ValueError("FrontierSmith needs seed JSON and a remote execution context")
-        if input.llm is None or input.llm.provider != "openai":
-            raise ValueError("FrontierSmith requires an OpenAI generation model")
+        if input.llm is None or input.llm.provider not in ("openai", OPENAI_COMPAT_PROVIDER):
+            raise ValueError("FrontierSmith requires an OpenAI (or openai_compat) generation model")
         self.input, self.options = input, options
         self.on_event = lambda event: None
 

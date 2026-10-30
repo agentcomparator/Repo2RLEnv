@@ -16,6 +16,7 @@ from pathlib import Path
 
 from repo2rlenv.execution.harbor import read_trial
 from repo2rlenv.execution.lifecycle import now, save_record
+from repo2rlenv.llm import wire_model
 from repo2rlenv.quality.loop.artifacts import digest, import_trial, task_identity
 
 
@@ -141,7 +142,7 @@ async def resume_verifier(task: Path, source: Path, destination: Path, budget, o
             "trials_dir": str(destination / trial_id),
             "agent": {
                 "name": "terminus-2",
-                "model_name": imported.model,
+                "model_name": wire_model(imported.model),
                 "kwargs": {"record_terminal_session": False},
             },
             "environment": {

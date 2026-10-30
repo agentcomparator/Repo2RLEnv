@@ -161,14 +161,43 @@ SourceSpec = Annotated[
 ]
 
 
+# Our alias for an OpenAI-compatible gateway. LiteLLM has no matching provider
+# prefix, so `llm.py` translates it to the OpenAI wire contract (`openai/<model>`
+# + $OPENAI_COMPAT_BASE_URL); only the model default lives here (input contract).
+OPENAI_COMPAT_PROVIDER = "openai_compat"
+OPENAI_COMPAT_MODEL_ENV = "OPENAI_COMPAT_MODEL"
+OPENAI_COMPAT_BASE_URL_ENV = "OPENAI_COMPAT_BASE_URL"
+OPENAI_COMPAT_API_TOKEN_ENV = "OPENAI_COMPAT_API_TOKEN"
+
+
 class LLMSpec(BaseModel):
     provider: str
-    model: str
+    # Empty is only legal for `openai_compat`, whose validator falls back to
+    # $OPENAI_COMPAT_MODEL — that is what lets `--llm openai_compat` carry no model.
+    model: str = ""
     api_key_env: str | None = None
     endpoint: str | None = None
     max_concurrent: int = 5
     timeout_sec: int = 120
     fallback: LLMSpec | None = None
+
+    @model_validator(mode="after")
+    def resolve_model(self) -> LLMSpec:
+        if self.model:
+            return self
+        if self.provider.lower() == OPENAI_COMPAT_PROVIDER:
+            from_env = os.environ.get(OPENAI_COMPAT_MODEL_ENV, "").strip()
+            if from_env:
+                self.model = from_env
+                return self
+            raise ValueError(
+                f"llm.model is empty. Set `llm.model` (or `--llm "
+                f"{OPENAI_COMPAT_PROVIDER}/MODEL`), or export ${OPENAI_COMPAT_MODEL_ENV}"
+            )
+        raise ValueError(
+            f"llm.model is required for provider {self.provider!r} "
+            "(expected a `provider/model` pair, e.g. anthropic/claude-sonnet-4-6)"
+        )
 
     @property
     def qualified_name(self) -> str:

@@ -6,6 +6,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from repo2rlenv.llm import DIRECT_PROVIDERS
 from repo2rlenv.spec.input import LLMSpec
 
 
@@ -180,9 +181,10 @@ class LoopOptions(Record):
             self.escalation_model,
             self.solver_model,
         ):
-            if spec and (spec.provider not in {"openai", "anthropic"} or spec.fallback):
+            if spec and (spec.provider.lower() not in DIRECT_PROVIDERS or spec.fallback):
                 raise ValueError(
-                    "Use explicit OpenAI/Anthropic routes; escalation is metered separately"
+                    "Use direct OpenAI/Anthropic routes or openai_compat; escalation is "
+                    "metered separately"
                 )
         return self
 
