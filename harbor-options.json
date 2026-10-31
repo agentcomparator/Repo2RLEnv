@@ -1,0 +1,19 @@
+{
+  "provider": "daytona",
+  "author_runtime": "pi",
+  "author_model": "openai_compat/mimo-v2.6-flash",
+  "max_stage_attempts": 3,
+  "max_spend_usd": "40.00",
+  "quality": {
+    "max_repairs": 3,
+    "run_rollout": true,
+    "review_model": {
+      "provider": "openai_compat",
+      "model": "mimo-v2.6-flash"
+    },
+    "solver_model": {
+      "provider": "openai_compat",
+      "model": "mimo-v2.6-flash"
+    }
+  }
+}
