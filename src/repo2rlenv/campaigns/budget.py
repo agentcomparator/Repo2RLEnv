@@ -140,8 +140,12 @@ class BudgetLedger:
         if not operation_id.strip() or not description.strip():
             raise ValueError("Reservation requires an operation ID and description")
         amount = _micros(amount_usd)
-        if amount == 0:
-            raise ValueError("Paid operations require a positive reservation")
+        # $0 is a legitimate hold for an operation priced at zero (a gateway-
+        # cataloged free-tier model computes to a $0 ceiling, and its turn still
+        # needs an operation row before it can settle).  Negative and non-finite
+        # amounts are rejected by _micros; an unknown *paid* price must be
+        # rejected where it is resolved (the author bridge raises in _rates), so
+        # no under-priced paid operation reaches here.
         limits = []
         for prefix, limit in scopes:
             if not prefix or prefix not in operation_id:

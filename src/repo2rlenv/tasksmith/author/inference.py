@@ -3,7 +3,12 @@ from __future__ import annotations
 # A design submission can include the complete private verifier plus model reasoning.
 # This is an output ceiling; each request still reserves against the same stage budget.
 MAX_OUTPUT_TOKENS = 12000
-MODEL_TIMEOUT_SEC = 300
+# The runtime's own abort must stay ABOVE the bridge's stall-recovery window
+# (bridge.STALL_ATTEMPT_TIMEOUTS = 240+560) so an adapter never cancels a live
+# recovery, and below the stage deadline (runner.author) so a recovered turn can
+# still finish inside its stage. Live runs died at 300s and then 600s to silent
+# gateway windows; normal completions observed under 60s.
+MODEL_TIMEOUT_SEC = 1150
 
 
 def anthropic_options(model: str) -> dict:

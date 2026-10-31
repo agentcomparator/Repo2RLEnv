@@ -10,7 +10,7 @@ import time
 from pathlib import Path, PurePosixPath
 from typing import TypedDict
 
-from repo2rlenv.auth import resolve_llm_api_key
+from repo2rlenv.auth import LLM_KEY_ENV_DEFAULTS, resolve_llm_api_key
 from repo2rlenv.campaigns.budget import BudgetLedger
 from repo2rlenv.execution.artifacts import (
     check_runtime_wheel,
@@ -26,12 +26,14 @@ from repo2rlenv.execution.lifecycle import (
     save_record,
     stop_worker,
 )
+from repo2rlenv.llm import openai_compat_api_base
 from repo2rlenv.locking import lock_file
 from repo2rlenv.quality.loop.artifacts import task_identity
 from repo2rlenv.quality.loop.client import RunBudget
 from repo2rlenv.quality.loop.models import ProbeManifest
 from repo2rlenv.quality.loop.remote import RemoteTrials
 from repo2rlenv.quality.loop.runner import QualityLoop
+from repo2rlenv.spec.input import OPENAI_COMPAT_PROVIDER, LLMSpec
 from repo2rlenv.tasksmith.author.artifact import artifact_stage, canonical_digest
 from repo2rlenv.tasksmith.author.budget import AuthorBudget
 from repo2rlenv.tasksmith.models import Design, Options, Panel, Profile
@@ -64,6 +66,24 @@ def _validate_profile_source_coverage(profile: Profile, source_files: list[str])
             for prefix in profile.options.test_paths + profile.options.public_exclude
         ):
             raise ValueError(f"Profile hides PR source change {name}")
+
+
+def author_route_missing(author_model: str) -> str | None:
+    """The credential/endpoint gap that must close before an author stage runs, or None.
+
+    Checked before any worker is provisioned: a missing gateway token or base
+    URL must fail in milliseconds, not after a sandbox spin-up.
+    """
+    provider, _, name = author_model.partition("/")
+    if provider == OPENAI_COMPAT_PROVIDER:
+        try:
+            openai_compat_api_base(LLMSpec(provider=OPENAI_COMPAT_PROVIDER, model=name))
+        except (RuntimeError, ValueError) as exc:
+            return str(exc)
+    if not resolve_llm_api_key(provider, None):
+        env = LLM_KEY_ENV_DEFAULTS.get(provider, provider.upper() + "_API_KEY")
+        return f"Tasksmith authoring requires ${env} before worker creation"
+    return None
 
 
 class State(TypedDict, total=False):
@@ -237,7 +257,9 @@ class Tasksmith:
                 runtime=self.options.author_runtime,
                 max_cost=float(self.options.author_stage_usd),
                 max_turns=self.options.author_turns,
-                deadline=time.time() + 1200,
+                # Comfortably above the adapter abort (MODEL_TIMEOUT_SEC) plus one stall
+                # recovery inside a turn, and far below the worker timeout.
+                deadline=time.time() + 1800,
                 shell=shell,
                 validate=validate,
                 initial_draft_key=(
@@ -775,10 +797,9 @@ class Tasksmith:
 
         from repo2rlenv.tasksmith.author.external_agent import runtime_path
 
-        if not resolve_llm_api_key("anthropic", None):
-            raise ValueError(
-                "Tasksmith authoring requires ANTHROPIC_API_KEY before worker creation"
-            )
+        author_problem = author_route_missing(self.options.author_model)
+        if author_problem:
+            raise ValueError(author_problem)
         for model in (
             self.options.quality.review_model,
             self.options.quality.repair_model,

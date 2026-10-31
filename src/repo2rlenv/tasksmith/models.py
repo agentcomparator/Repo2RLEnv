@@ -9,8 +9,10 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from repo2rlenv.llm import resolve_model_alias
 from repo2rlenv.quality.loop.models import LoopOptions, ProbeFocus
 from repo2rlenv.quality.loop.verifier_policy import check_behavioral_verifier
+from repo2rlenv.spec.input import OPENAI_COMPAT_PROVIDER
 from repo2rlenv.spec.recipe_options import PythonRepositoryProfile
 
 
@@ -166,10 +168,18 @@ class Options(Record):
             )
         if self.worker_snapshot and self.provider != "modal":
             raise ValueError("Worker snapshots currently require Modal")
-        if not self.author_model.startswith("anthropic/"):
+        provider = self.author_model.partition("/")[0]
+        if provider not in ("anthropic", OPENAI_COMPAT_PROVIDER):
             raise ValueError(
-                "Pi/OpenCode author bridge currently supports Anthropic; quality models may "
-                "use OpenAI, Anthropic or openai_compat"
+                "Pi/OpenCode author bridge supports anthropic/MODEL and openai_compat[/MODEL]; "
+                "quality models may use OpenAI, Anthropic or openai_compat"
+            )
+        # `openai_compat` alone takes its id from $OPENAI_COMPAT_MODEL, exactly
+        # as LLMSpec does, so every later provider/model split is well-formed.
+        self.author_model = resolve_model_alias(self.author_model)
+        if not self.author_model.partition("/")[2]:
+            raise ValueError(
+                "author_model must be provider/MODEL, e.g. anthropic/claude-sonnet-4-6"
             )
         for value in (self.author_stage_usd, self.max_spend_usd, self.worker_reservation_usd):
             if not Decimal(value).is_finite() or Decimal(value) <= 0:

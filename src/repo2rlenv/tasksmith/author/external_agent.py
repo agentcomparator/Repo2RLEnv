@@ -10,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from repo2rlenv.llm import resolve_model_alias
 from repo2rlenv.tasksmith.author.bridge import AgentBridge
 from repo2rlenv.tasksmith.author.inference import (
     MAX_OUTPUT_TOKENS,
@@ -104,6 +105,9 @@ async def run_external_agent(
     *, engine, model, system, prompt, budget, tools, handlers, trace, max_turns, max_cost=8
 ):
     adapter = runtime_path(engine)
+    # One resolved `provider/model` feeds the trace, the runtime config and the
+    # bridge, so `openai_compat` alone never reaches a naive string split.
+    model = resolve_model_alias(model)
     trace.parent.mkdir(parents=True, exist_ok=True)
     session_dir = trace.with_suffix("").with_name(trace.stem + "-runtime").resolve()
     session_dir.mkdir(parents=True, exist_ok=True)

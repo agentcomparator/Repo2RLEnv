@@ -132,7 +132,7 @@ You need Python 3.12 or later, Node.js 22.19 or later with npm (for the agent ru
 | `provider` | `modal` | `modal` or `daytona`: the worker and CPU trials |
 | `gpus` | `0` | `1` or `2` requests L4 GPUs on native Modal. Requires `provider: modal`. See `examples/tasksmith-gpu-options.json` |
 | `author_runtime` | `pi` | `pi` or `opencode` |
-| `author_model` | `anthropic/claude-sonnet-4-6` | Must be an `anthropic/…` model. Quality models can be OpenAI or Anthropic |
+| `author_model` | `anthropic/claude-sonnet-4-6` | `anthropic/MODEL` or `openai_compat[/MODEL]`; a bare `openai_compat` reads `$OPENAI_COMPAT_MODEL`. Quality models can be OpenAI, Anthropic or `openai_compat` |
 | `author_turns` | `18` | Model calls per authoring stage (2–50) |
 | `author_stage_usd` | `4.00` | Cost cap per authoring stage |
 | `max_stage_attempts` | `3` | Profile and design corrections per PR (1–5) |

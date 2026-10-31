@@ -49,6 +49,7 @@ function replySSE(response, model, { name, args = { command: "echo remote" }, te
 async function scenario(options = {}) {
   const dir = await mkdtemp(join(tmpdir(), "repo2reward-pi-test-"));
   const requests = [];
+  const requestHeaders = [];
   const effects = [];
   let child;
   let handlerError;
@@ -60,9 +61,15 @@ async function scenario(options = {}) {
       assert.ok(request.headers["x-api-key"] === token || request.headers.authorization === `Bearer ${token}`);
       if (request.url.startsWith("/v1/messages")) {
         requests.push(body);
+        requestHeaders.push(request.headers);
         if (options.apiError) {
           response.writeHead(402, { "Content-Type": "application/json" });
           response.end(JSON.stringify({ type: "error", error: { type: "invalid_request_error", message: "budget exhausted" } }));
+          return;
+        }
+        if (options.redirect) {
+          response.writeHead(307, { Location: "http://redirect.invalid/v1/messages" });
+          response.end();
           return;
         }
         replySSE(response, body.model, options.badResponse ? { ...options.badResponse } : requests.length === 1 || options.repeatTools
@@ -104,7 +111,7 @@ async function scenario(options = {}) {
       session_dir: dir,
       max_turns: options.maxTurns ?? 3,
       max_tokens: 16000,
-      model_timeout_sec: 300,
+      model_timeout_sec: options.modelTimeoutSec ?? 300,
       inference_options: options.inferenceOptions ?? {},
     };
     const configPath = join(dir, "config.json");
@@ -126,7 +133,7 @@ async function scenario(options = {}) {
     const events = await readFile(join(dir, "pi-events.jsonl"), "utf8");
     assert.ok(!events.includes(token), "Bridge token leaked into events");
     const sessions = (await readdir(dir)).filter((name) => name.endsWith(".jsonl") && name !== "pi-events.jsonl");
-    return { result, requests, effects, events, sessions, config, exitCode, stderr };
+    return { result, requests, requestHeaders, effects, events, sessions, config, exitCode, stderr };
   } finally {
     if (child && child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
     server.closeAllConnections();
@@ -228,6 +235,41 @@ test("Pi reports provider budget errors without retrying", { timeout: 30000 }, a
   assert.equal(run.exitCode, 1);
   assert.match(run.result.error, /budget exhausted/);
   assert.equal(run.requests.length, 1);
+});
+
+test("Pi fails the turn on a bridge redirect instead of following it", { timeout: 30000 }, async () => {
+  // The transport refuses redirection itself (that is what kept the old code's
+  // redirect:"error"); pi-ai surfaces every transport refusal as its generic
+  // "Connection error.", so the observable contract is: the turn fails, exactly
+  // one request reached the bridge, and the run exits without following.
+  const run = await scenario({ redirect: true, maxTurns: 1 });
+  assert.equal(run.exitCode, 1, JSON.stringify(run.result));
+  assert.match(run.result.error, /Connection error/);
+  assert.equal(run.requests.length, 1);
+  assert.equal(run.effects.length, 0);
+});
+
+test("the model transport stays on node:http, never native fetch", async () => {
+  const source = await readFile(adapter, "utf8");
+  // Native fetch applies an implicit 300s headers/idle-body timeout no
+  // AbortSignal can raise, which killed a live model request mid-stall-
+  // recovery at t+300s (generation11). The explicit deadline lives in the
+  // node:http paths only.
+  assert.ok(!/[^.\w]fetch\(/.test(source), "native fetch reintroduces the implicit 300s timeout");
+  assert.match(source, /from "node:http"/);
+});
+
+test("Pi's model timeout is the matched model_timeout_sec, not pi's 5-min HTTP idle default", { timeout: 30000 }, async () => {
+  // The SDK arms `setTimeout(abort, request.timeoutMs)` around the bridge fetch
+  // and sends it as `x-stainless-timeout` (seconds). Without options.timeoutMs
+  // in the stream call, pi falls back to its HTTP-idle default (300s) and kills
+  // any request that outlives it — mid stall-recovery, exactly like the old
+  // native-fetch cap (generation14). A non-300 model_timeout_sec must land on
+  // the wire.
+  const run = await scenario({ modelTimeoutSec: 42, maxTurns: 1 });
+  assert.equal(run.exitCode, 0, JSON.stringify(run.result));
+  assert.equal(run.requestHeaders[0]["x-stainless-timeout"], "42",
+    "per-request timeout fell through to pi's HTTP-idle default instead of model_timeout_sec");
 });
 
 test("Pi cancellation interrupts a pending remote tool and retains the result", { timeout: 30000 }, async () => {

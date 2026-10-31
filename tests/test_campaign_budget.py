@@ -132,3 +132,21 @@ def test_authorized_increase_retains_costs_holds_and_is_idempotent(tmp_path):
 def test_invalid_amounts_rejected(amount, tmp_path):
     with pytest.raises(ValueError, match="finite and nonnegative"):
         BudgetLedger(tmp_path / "budget.db", limit_usd=amount)
+
+
+def test_zero_priced_operation_records_and_settles_at_zero(tmp_path):
+    """A gateway-published free model owes a $0 hold, not a rejected reservation.
+
+    Reservations carry each operation's computed ceiling; a model the gateway
+    catalogs at $0/1M tokens legitimately computes to $0, and the ledger must
+    still record the operation so it can settle.  Negative and non-finite
+    amounts stay rejected by _micros.
+    """
+    ledger = BudgetLedger(tmp_path / "budget.db", limit_usd="1")
+    ledger.reserve("free-model:turn:1", "0.0", "llm:mimo:free")
+    assert ledger.status()["reserved_usd"] == "0.000000"
+    ledger.settle("free-model:turn:1", "0", evidence="gateway catalogs this model at zero")
+    status = ledger.status()
+    assert status["accounted_usd"] == "0.000000"
+    assert status["remaining_usd"] == "1.000000"
+    assert status["operations"][0]["status"] == "settled"

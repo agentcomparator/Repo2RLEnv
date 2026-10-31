@@ -268,7 +268,11 @@ own lookup, and a self-hosted `LLMSpec.endpoint` (`--llm-endpoint`) needs no key
 (`llm._resolve_api_key`). The `openai_compat` alias is the exception that owns all three
 gateway variables: it sends `openai/<model>` to `$OPENAI_COMPAT_BASE_URL` with
 `$OPENAI_COMPAT_API_TOKEN`, defaults `model` from `$OPENAI_COMPAT_MODEL` (`spec/input.py`),
-and rejects a missing name of the three before any request. Routes allowed by every direct dispatch gate (blind trials, quality-loop models, FrontierSmith) are declared once in `llm.DIRECT_PROVIDERS`; a harness gets `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` via `llm.agent_credential_env`, though the Pi/OpenCode author bridge and the reviewer-optimization benchmark stay Anthropic/OpenAI-only.
+and rejects a missing name of the three before any request. Routes allowed by every direct dispatch gate (blind trials, quality-loop models, FrontierSmith) are declared once in `llm.DIRECT_PROVIDERS`; a harness gets `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` via `llm.agent_credential_env`.
+Tasksmith's Pi/OpenCode author bridge also drives `openai_compat[/MODEL]` (the bare alias reads `$OPENAI_COMPAT_MODEL`):
+its runtime stays on Anthropic's Messages protocol locally while `tasksmith/author/openai_wire.py` translates
+upstream onto the gateway's OpenAI wire, and the bridge prices each turn from the gateway's `/models` catalog
+(LiteLLM's map otherwise). The reviewer-optimization benchmark stays Anthropic/OpenAI-only by design.
 
 Registry push credentials resolve from explicit env vars first: GHCR reads
 `GHCR_TOKEN` / `GITHUB_TOKEN` (needs a one-time

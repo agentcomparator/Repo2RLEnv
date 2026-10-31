@@ -13,7 +13,12 @@ import re
 from dataclasses import dataclass
 
 from repo2rlenv.auth import LLM_KEY_ENV_DEFAULTS, resolve_llm_api_key
-from repo2rlenv.spec.input import OPENAI_COMPAT_BASE_URL_ENV, OPENAI_COMPAT_PROVIDER, LLMSpec
+from repo2rlenv.spec.input import (
+    OPENAI_COMPAT_BASE_URL_ENV,
+    OPENAI_COMPAT_MODEL_ENV,
+    OPENAI_COMPAT_PROVIDER,
+    LLMSpec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +100,24 @@ def openai_compat_api_base(spec: LLMSpec) -> str:
             "--llm-endpoint URL (or llm.endpoint in config)."
         )
     return url
+
+
+def resolve_model_alias(name: str) -> str:
+    """Give a bare `openai_compat` alias its model id from $OPENAI_COMPAT_MODEL.
+
+    `Options.author_model` carries a rendered `provider/model` string, so the
+    alias written the way `--llm openai_compat` is written must gain its id
+    before any request or `provider/model` split happens.
+    """
+    if name != OPENAI_COMPAT_PROVIDER:
+        return name
+    model = os.environ.get(OPENAI_COMPAT_MODEL_ENV, "").strip()
+    if not model:
+        raise ValueError(
+            f"the {OPENAI_COMPAT_PROVIDER} route needs a model id: set author_model to "
+            f"{OPENAI_COMPAT_PROVIDER}/MODEL, or export ${OPENAI_COMPAT_MODEL_ENV}"
+        )
+    return f"{OPENAI_COMPAT_PROVIDER}/{model}"
 
 
 def completion_token_limit(spec: LLMSpec, max_tokens: int) -> dict[str, int]:

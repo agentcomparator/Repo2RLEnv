@@ -842,3 +842,330 @@ async def test_actual_opencode_truncated_tool_response_cannot_execute_before_eof
         "runtime_error",
     ]
     assert events[2]["cost_usd"] == pytest.approx(0.002)
+
+
+# --- the openai_compat author route -------------------------------------------
+
+GATEWAY_ENV = {
+    "OPENAI_COMPAT_BASE_URL": "http://gateway.internal/v1",
+    "OPENAI_COMPAT_API_TOKEN": "gw-token",
+}
+GATEWAY_MODEL = "mimo-test"
+GATEWAY_PRICING = {
+    "input_usd_per_1m": 1.0,  # $/token: 1e-6, 2e-6, 0.5e-6
+    "output_usd_per_1m": 2.0,
+    "cache_read_usd_per_1m": 0.5,
+}
+CATALOG = {"data": [{"id": GATEWAY_MODEL, "pricing": GATEWAY_PRICING}]}
+GATEWAY_COMPLETION = {
+    "id": "chatcmpl-1",
+    "choices": [
+        {"finish_reason": "stop", "message": {"content": "Submitting now.", "tool_calls": None}}
+    ],
+    "usage": {
+        "prompt_tokens": 1000,
+        "completion_tokens": 500,
+        "prompt_tokens_details": {"cached_tokens": 400},
+    },
+}
+
+
+class _Reply:
+    """Both gateway contexts (GET catalog, POST completion) in one local stand-in."""
+
+    def __init__(self, status, payload=None, text=""):
+        self.status, self._payload, self._text = status, payload, text
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def json(self):
+        return self._payload
+
+    async def text(self):
+        return self._text
+
+
+class LocalGateway:
+    """Deterministic gateway replies; no upstream HTTP requests are made."""
+
+    def __init__(
+        self, catalog=CATALOG, completion=GATEWAY_COMPLETION, status=200, silent_windows=0
+    ):
+        self.catalog, self.completion, self.status = catalog, completion, status
+        self.requests: list[dict] = []
+        self.catalog_reads = 0
+        self.silent_windows = silent_windows
+        self.post_attempts = 0
+
+    async def close(self):
+        pass
+
+    def get(self, url, *, headers):
+        assert url == GATEWAY_ENV["OPENAI_COMPAT_BASE_URL"] + "/models"
+        assert headers["Authorization"] == "Bearer " + GATEWAY_ENV["OPENAI_COMPAT_API_TOKEN"]
+        self.catalog_reads += 1
+        return _Reply(200, self.catalog)
+
+    def post(self, url, *, json, headers, timeout=None):
+        self.post_attempts += 1
+        assert url == GATEWAY_ENV["OPENAI_COMPAT_BASE_URL"] + "/chat/completions"
+        assert headers["Authorization"] == "Bearer " + GATEWAY_ENV["OPENAI_COMPAT_API_TOKEN"]
+        if self.silent_windows:
+            self.silent_windows -= 1
+            raise TimeoutError("simulated silent gateway window")
+        self.requests.append(json)
+        return _Reply(self.status, self.completion, "gateway error")
+
+
+@pytest.fixture
+def local_gateway(monkeypatch):
+    provider = LocalGateway()
+    monkeypatch.setattr(bridge_module, "ClientSession", lambda **kwargs: provider)
+    for name, value in GATEWAY_ENV.items():
+        monkeypatch.setenv(name, value)
+    return provider
+
+
+def gateway_model():
+    return f"openai_compat/{GATEWAY_MODEL}"
+
+
+@pytest.mark.asyncio
+async def test_gateway_route_translates_meters_and_replies(tmp_path, local_gateway):
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {
+                    "model": GATEWAY_MODEL,
+                    "system": [{"type": "text", "text": "Author it."}],
+                    "messages": [{"role": "user", "content": "Start."}],
+                    "stream": False,
+                },
+                token=bridge.token,
+            )
+        )
+        assert reply.status == 200
+        message = json.loads(reply.text)
+        assert message["role"] == "assistant"
+        assert message["stop_reason"] == "end_turn"
+        assert message["content"] == [{"type": "text", "text": "Submitting now."}]
+        assert message["usage"]["input_tokens"] == 1000
+    forwarded = local_gateway.requests[0]
+    assert forwarded["model"] == GATEWAY_MODEL
+    assert forwarded["stream"] is False
+    assert forwarded["max_tokens"] == MAX_OUTPUT_TOKENS
+    assert forwarded["messages"][0] == {"role": "system", "content": "Author it."}
+    # Gateway-published prices, cache reads at the cache rate (not Anthropic's).
+    assert bridge.rates == (1e-6, 2e-6, 0.5e-6)
+    assert bridge.cost == pytest.approx((1000 - 400) * 1e-6 + 400 * 0.5e-6 + 500 * 2e-6)
+    assert local_gateway.catalog_reads == 1
+    assert bridge.turns == 1
+
+
+@pytest.mark.asyncio
+async def test_gateway_route_serves_anthropic_sse_for_a_streaming_runtime(
+    tmp_path, local_gateway, monkeypatch
+):
+    chunks = []
+
+    class Capture:
+        body = None
+
+        def __init__(self, **kwargs):
+            pass
+
+        async def prepare(self, request):
+            pass
+
+        async def write(self, chunk):
+            chunks.append(chunk)
+
+        async def write_eof(self):
+            pass
+
+    monkeypatch.setattr(bridge_module.web, "StreamResponse", Capture)
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {"model": GATEWAY_MODEL, "messages": [], "stream": True}, token=bridge.token
+            )
+        )
+        assert reply.body is None  # a StreamResponse, not a JSON body
+    frames = [frame for chunk in chunks for frame in chunk.split(b"\n\n") if frame]
+    assert all(frame.startswith(b"event: ") for frame in frames)
+    events = [json.loads(frame.split(b"\n", 1)[1][6:]) for frame in frames]
+    assert [event["type"] for event in events] == [
+        "message_start",
+        "content_block_start",
+        "content_block_delta",
+        "content_block_stop",
+        "message_delta",
+        "message_stop",
+    ]
+    # Settled at the gateway's catalog rates: 600 uncached + 400 cached + 500 out.
+    assert bridge.cost == pytest.approx((1000 - 400) * 1e-6 + 400 * 0.5e-6 + 500 * 2e-6)
+
+
+@pytest.mark.asyncio
+async def test_gateway_route_refuses_a_model_it_cannot_budget_before_spending(
+    tmp_path, monkeypatch
+):
+    provider = LocalGateway(catalog={"data": []})
+    monkeypatch.setattr(bridge_module, "ClientSession", lambda **kwargs: provider)
+    for name, value in GATEWAY_ENV.items():
+        monkeypatch.setenv(name, value)
+    import litellm
+
+    monkeypatch.setattr(litellm, "get_model_info", lambda model: {})
+    async with make_bridge(tmp_path, model="openai_compat/mystery-model") as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {"model": "mystery-model", "messages": [], "stream": False}, token=bridge.token
+            )
+        )
+        assert reply.status == 502
+        assert "Cannot budget" in str(bridge.failure)
+        assert "no price for openai/mystery-model" in str(bridge.failure)
+    assert provider.requests == []
+    assert provider.catalog_reads == 1
+    assert bridge.turns == 0
+    assert bridge.budget.spent == 0
+
+
+@pytest.mark.asyncio
+async def test_gateway_route_rejects_an_unmatched_runtime_model_before_pricing(
+    tmp_path, local_gateway
+):
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest({"model": "another-model", "messages": []}, token=bridge.token)
+        )
+        assert reply.status == 502
+        assert "different model" in str(bridge.failure)
+    assert local_gateway.requests == []
+    assert local_gateway.catalog_reads == 0
+
+
+def test_gateway_route_requires_its_token(tmp_path, monkeypatch):
+    monkeypatch.delenv("OPENAI_COMPAT_API_TOKEN", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_COMPAT_API_TOKEN"):
+        make_bridge(tmp_path, model=gateway_model())
+
+
+def gateway_session(monkeypatch, provider):
+    monkeypatch.setattr(bridge_module, "ClientSession", lambda **kwargs: provider)
+    for name, value in GATEWAY_ENV.items():
+        monkeypatch.setenv(name, value)
+    return provider
+
+
+@pytest.mark.asyncio
+async def test_gateway_stall_retries_once_and_leaves_the_stalled_operation_reserved(
+    tmp_path, monkeypatch
+):
+    provider = LocalGateway(silent_windows=1)
+    gateway_session(monkeypatch, provider)
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {"model": GATEWAY_MODEL, "messages": [], "stream": False}, token=bridge.token
+            )
+        )
+        assert reply.status == 200
+        # The retry is an honest second model turn: two admissions, one provider reply.
+        assert bridge.turns == 2
+        assert bridge.cost == pytest.approx((1000 - 400) * 1e-6 + 400 * 0.5e-6 + 500 * 2e-6)
+        assert provider.post_attempts == 2
+        assert len(provider.requests) == 1
+
+        events = [json.loads(line) for line in bridge.trace.read_text().splitlines()]
+        assert [event["kind"] for event in events] == [
+            "model_request",
+            "provider_stall",
+            "model_request",
+            "model",
+        ]
+        stall = next(event for event in events if event["kind"] == "provider_stall")
+        assert stall["timeout_sec"] == bridge_module.STALL_ATTEMPT_TIMEOUTS[0]
+        assert stall["attempt"] == 1
+        assert stall["reserved_operation"].endswith(":1")
+
+        operations = bridge.budget.budget.ledger.status()["operations"]
+        mine = [op for op in operations if op["id"].endswith(":1") or op["id"].endswith(":2")]
+        statuses = {op["id"].rsplit(":", 1)[-1]: op["status"] for op in mine}
+        assert statuses == {"1": "reserved", "2": "settled"}, statuses
+
+
+@pytest.mark.asyncio
+async def test_two_gateway_stalls_fail_outward_with_both_reservations_retained(
+    tmp_path, monkeypatch
+):
+    provider = LocalGateway(silent_windows=2)
+    gateway_session(monkeypatch, provider)
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {"model": GATEWAY_MODEL, "messages": [], "stream": False}, token=bridge.token
+            )
+        )
+        assert reply.status == 502
+        assert "no complete response" in str(bridge.failure)
+        assert "reconciliation" in str(bridge.failure)
+        assert bridge.turns == 2
+        assert provider.post_attempts == 2
+        assert provider.requests == []
+
+        operations = bridge.budget.budget.ledger.status()["operations"]
+        mine = [op for op in operations if op["id"].endswith(":1") or op["id"].endswith(":2")]
+        assert len(mine) == 2
+        assert {op["status"] for op in mine} == {"reserved"}
+        assert all(op["actual_micros"] is None for op in mine)  # nothing settled via guesswork
+
+        kinds = [json.loads(line)["kind"] for line in bridge.trace.read_text().splitlines()]
+        assert kinds == [
+            "model_request",
+            "provider_stall",
+            "model_request",
+            "provider_stall",
+            "runtime_error",
+        ]
+
+
+@pytest.mark.asyncio
+async def test_gateway_free_priced_model_admits_and_settles_at_zero(tmp_path, monkeypatch):
+    """A catalog-published $0 model (free tier) must admit its turn and settle $0.
+
+    The bridge prices each turn from the gateway's own catalog, so a model the
+    gateway lists at zero has a legitimate $0 ceiling: admission must record the
+    operation instead of refusing the free turn outright.
+    """
+    free_catalog = {
+        "data": [
+            {
+                "id": GATEWAY_MODEL,
+                "pricing": {
+                    "input_usd_per_1m": 0,
+                    "output_usd_per_1m": 0,
+                    "cache_read_usd_per_1m": 0,
+                },
+            }
+        ]
+    }
+    provider = LocalGateway(catalog=free_catalog)
+    gateway_session(monkeypatch, provider)
+    async with make_bridge(tmp_path, model=gateway_model()) as bridge:
+        reply = await bridge.messages(
+            BridgeRequest(
+                {"model": GATEWAY_MODEL, "messages": [], "stream": False}, token=bridge.token
+            )
+        )
+        assert reply.status == 200, str(bridge.failure)
+        assert bridge.turns == 1
+        assert bridge.cost == 0
+        assert provider.post_attempts == 1
+        operations = bridge.budget.budget.ledger.status()["operations"]
+        assert [(op["status"], op["actual_micros"]) for op in operations] == [("settled", 0)]

@@ -152,3 +152,50 @@ def test_frontiersmith_still_rejects_other_providers_and_fallbacks():
 def test_frontiersmith_pricing_contract_still_gates_the_model():
     with pytest.raises(ValueError, match="This runtime requires openai/gpt-6"):
         _author(LLMSpec(provider="openai_compat", model="llama-3.3-70b-instruct"))
+
+
+# --- tasksmith author routes -------------------------------------------------
+
+
+def test_author_options_admit_the_bare_alias_and_resolve_it(monkeypatch):
+    from repo2rlenv.tasksmith.models import Options
+
+    monkeypatch.setenv("OPENAI_COMPAT_MODEL", "mimo-v2.6-flash")
+    options = Options(author_model="openai_compat")
+    assert options.author_model == "openai_compat/mimo-v2.6-flash"
+    # An explicit gateway model passes through untouched.
+    assert Options(author_model="openai_compat/org/model").author_model == "openai_compat/org/model"
+    assert Options().author_model == "anthropic/claude-sonnet-4-6"
+
+
+def test_author_options_reject_routes_the_author_bridge_cannot_drive():
+    from repo2rlenv.tasksmith.models import Options
+
+    with pytest.raises(ValueError, match="author bridge supports anthropic/MODEL"):
+        Options(author_model="openai/gpt-6-sol")
+    with pytest.raises(ValueError, match="author_model must be provider/MODEL"):
+        Options(author_model="anthropic")
+
+
+def test_author_alias_without_its_env_model_fails_when_the_options_load(monkeypatch):
+    from repo2rlenv.tasksmith.models import Options
+
+    monkeypatch.delenv("OPENAI_COMPAT_MODEL", raising=False)
+    with pytest.raises(ValueError, match="OPENAI_COMPAT_MODEL"):
+        Options(author_model="openai_compat")
+
+
+def test_author_route_preflight_names_the_gap_before_any_worker_spawns():
+    from repo2rlenv.tasksmith.runner import author_route_missing
+
+    with mock.patch.dict(os.environ, {}, clear=True):
+        assert author_route_missing("anthropic/claude-sonnet-4-6") == (
+            "Tasksmith authoring requires $ANTHROPIC_API_KEY before worker creation"
+        )
+        assert "OPENAI_COMPAT_BASE_URL" in author_route_missing("openai_compat/mimo-v2.6-flash")
+
+    with mock.patch.dict(os.environ, {"OPENAI_COMPAT_BASE_URL": BASE_URL}, clear=True):
+        assert "OPENAI_COMPAT_API_TOKEN" in author_route_missing("openai_compat/mimo-v2.6-flash")
+
+    with mock.patch.dict(os.environ, TRIAD, clear=True):
+        assert author_route_missing("openai_compat/llama-3.3-70b-instruct") is None

@@ -69,7 +69,11 @@ Those six are resolved by `repo2rlenv` itself, so a missing key fails fast with 
 
 The alias validates and dispatches as `openai/<model>` (LiteLLM has no `openai_compat` prefix), while receipts and job records keep reading `openai_compat/<model>`. Missing base URL, token or model each fail before any request, naming the variable. Model ids matching the OpenAI reasoning families inherit OpenAI's parameter names (`max_completion_tokens`, no `temperature`), like `openai/` does.
 
-Outside plain `generate`/`bootstrap` the alias rides every direct-dispatch route, declared once in `llm.DIRECT_PROVIDERS`: blind Harbor trials (`harbor run_trial`) and native quality rollouts hand the harness `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` (Terminus also gets `--ak api_base=` or `api_base` in its kwargs), `quality run --review-model/--solver-model` accepts `openai_compat[/MODEL]`, and FrontierSmith accepts it when the model is one of its priced OpenAI ids — that pricing contract (`gpt-6-sol`/`gpt-6-luna`) keeps the ledger exact through the gateway. Pi/OpenCode author stages and the reviewer-optimization benchmark stay Anthropic/OpenAI-only by design.
+Outside plain `generate`/`bootstrap` the alias rides every direct-dispatch route, declared once in `llm.DIRECT_PROVIDERS`: blind Harbor trials (`harbor run_trial`) and native quality rollouts hand the harness `openai/<model>` plus `OPENAI_API_KEY`/`OPENAI_BASE_URL` (Terminus also gets `--ak api_base=` or `api_base` in its kwargs), `quality run --review-model/--solver-model` accepts `openai_compat[/MODEL]`, and FrontierSmith accepts it when the model is one of its priced OpenAI ids — that pricing contract (`gpt-6-sol`/`gpt-6-luna`) keeps the ledger exact through the gateway. Pi/OpenCode author stages accept `anthropic/MODEL` and `openai_compat[/MODEL]` (the bare alias reads
+`$OPENAI_COMPAT_MODEL`): the runtime stays on Anthropic's Messages protocol while the local bridge
+translates upstream onto the gateway's OpenAI wire, metering each turn at the prices the gateway
+publishes in its `/models` catalog (falling back to LiteLLM's map). The reviewer-optimization
+benchmark stays Anthropic/OpenAI-only by design.
 
 Cost is still `litellm.completion_cost()`: a model LiteLLM cannot price reports `$0.00`, so cost-based caps (e.g. `max_llm_spend_usd`) never trip for an unpriced model. Prefer a priced model, or bound the run by height (`--max-iterations`, campaign reservations).
 

@@ -8,6 +8,7 @@ import { appendFileSync, mkdirSync, readFileSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { requestJSON, RUNTIME_REQUEST_TIMEOUT_MS } from "./local_http.mjs";
+import { request as httpRequest } from "node:http";
 
 function validateConfig(config) {
   for (const field of ["model", "system", "prompt", "bridge_url", "bridge_token", "session_dir"]) {
@@ -121,8 +122,14 @@ export async function runPi(config) {
   const originalOffline = process.env.PI_OFFLINE;
   process.env.PI_OFFLINE = "1";
 
-  // This also rejects redirects, so the local bridge token never follows a
+  // This also refuses redirects, so the local bridge token never follows a
   // redirect to a provider or a URL selected by model output.
+  //
+  // node:http honours only the explicit deadline below. Native fetch applies an
+  // implicit 300s headers/idle-body timeout that no AbortSignal can raise, and
+  // a silent gateway would kill a live model request mid-stall-recovery at
+  // exactly t+300s — before the bridge's own attempt gates can settle it (the
+  // trap local_http.mjs documents for control requests).
   const bridgeFetch = async (input, init = {}) => {
     const url = new URL(input instanceof Request ? input.url : input);
     if (url.origin !== bridge.origin || !["/v1/messages", "/tool"].includes(url.pathname)) {
@@ -131,7 +138,73 @@ export async function runPi(config) {
     const signals = [controller.signal, AbortSignal.timeout(requestTimeoutMs)];
     if (init.signal) signals.push(init.signal);
     if (input instanceof Request && input.signal) signals.push(input.signal);
-    return fetch(input, { ...init, redirect: "error", signal: AbortSignal.any(signals) });
+    // Spread would drop a Headers instance's pairs (they are not own
+    // enumerable props) and lose the bridge token, so normalize first.
+    const source = input instanceof Request ? input.headers : init.headers;
+    const headers = source ? Object.fromEntries(new Headers(source)) : {};
+    // Never request an encoding this hand-built client would receive raw.
+    delete headers["accept-encoding"];
+    const method = init.method ?? (input instanceof Request ? input.method : undefined) ?? "GET";
+    let body = init.body ?? (input instanceof Request && !["GET", "HEAD"].includes(input.method) ? input.body : undefined);
+    if (body !== undefined && typeof body === "object" && !Buffer.isBuffer(body) && !(body instanceof Uint8Array)) {
+      body = Buffer.from(await new Response(body).arrayBuffer());
+    }
+    const payload = body === undefined ? undefined : Buffer.isBuffer(body) ? body : Buffer.from(body);
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      let request;
+      try {
+        request = httpRequest(
+          url,
+          {
+            method,
+            headers: { ...headers, ...(payload === undefined ? {} : { "Content-Length": Buffer.byteLength(payload) }) },
+            signal: AbortSignal.any(signals),
+            agent: false,
+          },
+          (response) => {
+            const status = response.statusCode ?? 599;
+            if (status >= 300 && status < 400) {
+              response.resume();
+              reject(new Error(`Pi bridge refused redirect to HTTP ${status}`));
+              return;
+            }
+            settled = true;
+            const stream = new ReadableStream({
+              start(target) {
+                let ended = false;
+                response.on("data", (chunk) => target.enqueue(new Uint8Array(chunk)));
+                response.once("end", () => {
+                  ended = true;
+                  target.close();
+                });
+                response.once("error", (error) => target.error(error));
+                response.once("aborted", () => target.error(new Error("Pi bridge response aborted before completion")));
+                response.once("close", () => {
+                  if (!ended) target.error(new Error("Pi bridge response closed before completion"));
+                });
+              },
+              cancel() {
+                response.destroy();
+                request.destroy();
+              },
+            });
+            const responseHeaders = new Headers();
+            for (const [name, value] of Object.entries(response.headers)) {
+              responseHeaders.set(name, Array.isArray(value) ? value.join(", ") : String(value));
+            }
+            resolve(new Response(stream, { status, statusText: response.statusMessage ?? "", headers: responseHeaders }));
+          },
+        );
+      } catch (error) {
+        reject(new Error(`Pi bridge request ${url.pathname} failed: ${error.message}`));
+        return;
+      }
+      request.once("error", (error) => {
+        if (!settled) reject(new Error(`Pi bridge transport ${url.pathname}: ${error.message}`));
+      });
+      request.end(payload);
+    });
   };
 
   try {
@@ -215,6 +288,14 @@ export async function runPi(config) {
       turns += 1;
       return piStream(currentModel, context, {
         ...options, maxTokens, maxRetries: 0, fetch: bridgeFetch,
+        // Pi resolves each request's model timeout as
+        // `options.timeoutMs ?? retry.provider.timeoutMs ?? httpIdleTimeoutMs`,
+        // and its HTTP-idle default is 5 minutes. That default capped every
+        // model stream at t+300s, killing pi mid stall-recovery (240+560) even
+        // though model_timeout_sec requires the runtime's own abort to stay
+        // above that window. Pass the matched deadline so it, not the idle
+        // setting, governs the upstream stack.
+        timeoutMs: requestTimeoutMs,
         // The parent selects the same policy for every runtime. Override Pi's
         // model-catalog defaults without touching signed conversation blocks.
         onPayload: (payload) => {
